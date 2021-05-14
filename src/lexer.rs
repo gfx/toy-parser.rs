@@ -153,10 +153,6 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
         return None;
     }
 
-    fn is_eof(&mut self) -> bool {
-        return self.peek().is_none();
-    }
-
     fn next(&mut self) {
         self.src.next().unwrap();
         self.pos += 1;
