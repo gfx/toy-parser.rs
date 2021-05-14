@@ -1,10 +1,7 @@
 // https://spec.graphql.org/draft/
 
 use std::char;
-use std::error;
-use std::fmt;
 use std::iter;
-use std::iter::FromIterator;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Loc {
@@ -176,10 +173,8 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
                     self.next();
                     self.line += 1;
 
-                    if let Some(c) = self.peek() {
-                        if c == CR {
-                            self.next();
-                        }
+                    if self.expect_opt(CR) {
+                        self.next();
                     }
                 }
                 _ => {
@@ -361,6 +356,14 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
 #[cfg(test)]
 mod tests {
     use crate::*;
+
+    #[test]
+    fn lex_line_count() {
+        let s = "foo\nbar\rbaz\r\nbax";
+        let mut lexer = Lexer::from_iter(s.chars());
+        let _ = lexer.lex_to_tokens().unwrap();
+        assert_eq!(lexer.line, 4);
+    }
 
     #[test]
     fn lex_int_value() {
