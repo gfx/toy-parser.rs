@@ -86,6 +86,13 @@ where
 const CR: char = '\x0d'; // Carriage Return
 const NR: char = '\x0a'; // New Line
 
+impl<'a> Lexer<std::str::Chars<'a>> {
+    pub fn from_str<StrLike: Into<String>>(src: StrLike) -> Self {
+        let s = src.into();
+        return Self::from_iter(s.chars());
+    }
+}
+
 impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
     pub fn from_iter(iter: Iter) -> Self {
         return Self {
@@ -356,6 +363,14 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
 #[cfg(test)]
 mod tests {
     use crate::*;
+
+    #[test]
+    fn lex_str() {
+        let s = "";
+        let mut lexer = Lexer::from_str(s);
+        let tokens = lexer.lex_to_tokens().unwrap();
+        assert_eq!(tokens.len(), 0);
+    }
 
     #[test]
     fn lex_line_count() {
