@@ -1,7 +1,7 @@
 // https://spec.graphql.org/draft/
 
-use std::char;
 use std::iter;
+use std::u8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Loc {
@@ -65,17 +65,17 @@ impl Token {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LexErrorKind {
-    UnexpectedChar { expected: char, got: char },
+    Unexpectedu8 { expected: u8, got: u8 },
     UnexpectedEof,
-    UnexpectedToken { expected: TokenKind, got: char },
-    InvalidChar(char),
+    UnexpectedToken { expected: TokenKind, got: u8 },
+    Invalidu8(u8),
 }
 
 pub type LexError = Annotated<LexErrorKind>;
 
 pub struct Lexer<Iter>
 where
-    Iter: iter::Iterator<Item = char>,
+    Iter: iter::Iterator<Item = u8>,
 {
     src: iter::Peekable<Iter>,
 
@@ -83,10 +83,34 @@ where
     line: usize,
 }
 
-const CR: char = '\x0d'; // Carriage Return
-const NR: char = '\x0a'; // New Line
+const SP: u8 = b'\x20'; // Space
+const HT: u8 = b'\x09'; // Horizontal Tab
+const CR: u8 = b'\x0d'; // Carriage Return
+const NR: u8 = b'\x0a'; // New Line
 
-impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
+fn is_digit(c: u8) -> bool {
+    return match c {
+        b'0'..=b'9' => true,
+        _ => false,
+    };
+}
+
+fn is_letter(c: u8) -> bool {
+    return match c {
+        b'a'..=b'z' | b'A'..=b'Z' => true,
+        _ => false,
+    };
+}
+
+fn is_name_start(c: u8) -> bool {
+    return is_letter(c) || c == b'_';
+}
+
+fn is_name_continue(c: u8) -> bool {
+    return is_letter(c) || is_digit(c) || c == b'_';
+}
+
+impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
     pub fn from_iter(iter: Iter) -> Self {
         return Self {
             src: iter.peekable(),
@@ -136,7 +160,7 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
                 }
             } else if let Some(c) = self.peek() {
                 let err = cb(Err(LexError::new(
-                    LexErrorKind::InvalidChar(c),
+                    LexErrorKind::Invalidu8(c),
                     self.loc(self.pos, self.pos),
                 )));
                 if err.is_some() {
@@ -162,7 +186,7 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
     fn skip_whitespaces(&mut self) {
         while let Some(c) = self.peek() {
             match c {
-                ' ' | '\t' => {
+                SP | HT => {
                     self.next();
                 }
                 NR => {
@@ -184,11 +208,11 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
         }
     }
 
-    fn peek(&mut self) -> Option<char> {
+    fn peek(&mut self) -> Option<u8> {
         return self.src.peek().copied();
     }
 
-    fn expect_opt(&mut self, expected: char) -> bool {
+    fn expect_opt(&mut self, expected: u8) -> bool {
         if let Some(got) = self.peek() {
             if got == expected {
                 self.next();
@@ -198,14 +222,14 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
         return false;
     }
 
-    fn expect(&mut self, expected: char) -> Option<LexError> {
+    fn expect(&mut self, expected: u8) -> Option<LexError> {
         if self.expect_opt(expected) {
             return None;
         }
 
         if let Some(got) = self.peek() {
             return Some(LexError::new(
-                LexErrorKind::UnexpectedChar { expected, got },
+                LexErrorKind::Unexpectedu8 { expected, got },
                 self.loc(self.pos, self.pos + 1),
             ));
         } else {
@@ -232,25 +256,25 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
         let start = self.pos;
 
         // NegativeSign
-        self.expect_opt('-');
+        self.expect_opt(b'-');
 
         // IntegerPart
         let mut has_int_part = false;
         while let Some(c) = self.peek() {
-            if c.is_numeric() {
+            if is_digit(c) {
                 self.next();
                 has_int_part = true;
 
-                if c == '0' && !has_int_part {
-                    // ok, and make sure the next char is not digit nor NameStart
+                if c == b'0' && !has_int_part {
+                    // ok, and make sure the next u8 is not digit nor NameStart
                     if let Some(ahead) = self.peek() {
-                        if ahead.is_alphanumeric() {
+                        if is_name_start(ahead) {
                             return Err(self.unexpected_token_error(TokenKind::NumericValue));
                         }
                     }
                 }
             } else {
-                // TODO: make sure the next char is not NameStart
+                // TODO: make sure the next u8 is not NameStart
                 break;
             }
         }
@@ -261,13 +285,13 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
 
         // fractional part or exponent part
         let mut has_fractional_part = false;
-        if self.expect_opt('.') {
+        if self.expect_opt(b'.') {
             // fractional part
             has_fractional_part = true;
 
             // digits
             while let Some(c) = self.peek() {
-                if c.is_numeric() {
+                if is_digit(c) {
                     self.next();
                     has_fractional_part = true;
                 } else {
@@ -277,16 +301,16 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
         }
 
         let mut has_exponent_part = false;
-        if self.expect_opt('e') || self.expect_opt('E') {
+        if self.expect_opt(b'e') || self.expect_opt(b'E') {
             // exponent part
             has_exponent_part = true;
 
             // sign
-            let _ = self.expect_opt('-') || self.expect_opt('+');
+            let _ = self.expect_opt(b'-') || self.expect_opt(b'+');
 
             // digits
             while let Some(c) = self.peek() {
-                if c.is_numeric() {
+                if is_digit(c) {
                     self.next();
                 } else {
                     break;
@@ -306,18 +330,21 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
         let start = self.pos;
         // NameStart
         if let Some(c) = self.peek() {
-            if c.is_ascii_alphabetic() {
+            if is_name_start(c) {
                 self.next();
             } else {
                 return Err(self.unexpected_token_error(TokenKind::Name));
             }
         } else {
-            return Err(LexError::new(LexErrorKind::UnexpectedEof, self.loc(self.pos, self.pos)));
+            return Err(LexError::new(
+                LexErrorKind::UnexpectedEof,
+                self.loc(self.pos, self.pos),
+            ));
         }
 
         // NameContinue
         while let Some(c) = self.peek() {
-            if c.is_ascii_alphanumeric() {
+            if is_name_continue(c) {
                 self.next();
             } else {
                 break;
@@ -333,23 +360,26 @@ impl<Iter: iter::Iterator<Item = char>> Lexer<Iter> {
 
         if let Some(c) = self.peek() {
             match c {
-                '!' | '$' | '&' | '(' | ')'	| ':'	| '='	| '@' |	'['	| ']'	| '{'	| '|' |	'}' => {
+                b'!' | b'$' | b'&' | b'(' | b')' | b':' | b'=' | b'@' | b'[' | b']' | b'{'
+                | b'|' | b'}' => {
                     self.next();
                     return Ok(Token::new(TokenKind::Punctuator, self.loc(start, self.pos)));
-                },
-                '.' => { // ...
-                    self.next();
-                    self.expect('.');
-                    self.expect('.');
-                    return Ok(Token::new(TokenKind::Punctuator, self.loc(start, self.pos)));
-                },
-                _ => {
-                    return Err(self.unexpected_token_error(TokenKind::Punctuator))
                 }
+                b'.' => {
+                    // ...
+                    self.next();
+                    self.expect(b'.');
+                    self.expect(b'.');
+                    return Ok(Token::new(TokenKind::Punctuator, self.loc(start, self.pos)));
+                }
+                _ => return Err(self.unexpected_token_error(TokenKind::Punctuator)),
             }
         }
 
-        return Err(LexError::new(LexErrorKind::UnexpectedEof, self.loc(start, self.pos)));
+        return Err(LexError::new(
+            LexErrorKind::UnexpectedEof,
+            self.loc(start, self.pos),
+        ));
     }
 }
 
@@ -360,7 +390,7 @@ mod tests {
     #[test]
     fn lex_line_count() {
         let s = "foo\nbar\rbaz\r\nbax";
-        let mut lexer = Lexer::from_iter(s.chars());
+        let mut lexer = Lexer::from_iter(s.bytes());
         let _ = lexer.lex_to_tokens().unwrap();
         assert_eq!(lexer.line, 4);
     }
@@ -370,7 +400,7 @@ mod tests {
         let int_values = ["0", "42", "-1234567890"];
         for s in int_values.iter() {
             let src = String::from(*s);
-            let mut lexer = Lexer::from_iter(src.chars());
+            let mut lexer = Lexer::from_iter(src.bytes());
             let r = lexer.lex_to_tokens();
             if r.is_err() {
                 panic!("{:?} -> {:?}", src, r.unwrap_err());
@@ -393,7 +423,7 @@ mod tests {
         let float_values = ["0.0", "42.195", "0.1e1", "0e0", "0E0", "0e+0", "0e-0"];
         for s in float_values.iter() {
             let src = String::from(*s);
-            let mut lexer = Lexer::from_iter(src.chars());
+            let mut lexer = Lexer::from_iter(src.bytes());
             let r = lexer.lex_to_tokens();
             if r.is_err() {
                 panic!("{:?} -> {:?}", src, r.unwrap_err());
@@ -421,32 +451,36 @@ mod tests {
             }
         "#;
         let src = String::from(s);
-        let mut lexer = Lexer::from_iter(src.chars());
+        let mut lexer = Lexer::from_iter(src.bytes());
         let r = lexer.lex_to_tokens();
         if r.is_err() {
             panic!("{:?} -> {:?}", src, r.unwrap_err());
         }
         let tokens = r.unwrap();
 
-        let token_kinds: Vec<TokenKind> = tokens.iter().map(|token| {
-            return token.value;
-        }).collect();
+        let token_kinds: Vec<TokenKind> = tokens
+            .iter()
+            .map(|token| {
+                return token.value;
+            })
+            .collect();
 
-        assert_eq!(token_kinds, vec![
-            TokenKind::Name, // schema
-            TokenKind::Punctuator, // {
-
-            TokenKind::Name, // query
-            TokenKind::Punctuator, // :
-            TokenKind::Name, // Query,
-            TokenKind::Name, // mutation
-            TokenKind::Punctuator, // :
-            TokenKind::Name, // Mutation,
-            TokenKind::Name, // subscription
-            TokenKind::Punctuator, // :
-            TokenKind::Name, // Subscription,
-
-            TokenKind::Punctuator, // }
-        ]);
+        assert_eq!(
+            token_kinds,
+            vec![
+                TokenKind::Name,       // schema
+                TokenKind::Punctuator, // {
+                TokenKind::Name,       // query
+                TokenKind::Punctuator, // :
+                TokenKind::Name,       // Query,
+                TokenKind::Name,       // mutation
+                TokenKind::Punctuator, // :
+                TokenKind::Name,       // Mutation,
+                TokenKind::Name,       // subscription
+                TokenKind::Punctuator, // :
+                TokenKind::Name,       // Subscription,
+                TokenKind::Punctuator, // }
+            ]
+        );
     }
 }
