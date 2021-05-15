@@ -3,7 +3,7 @@
 use std::iter;
 use std::u8;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Loc {
     start: usize,
     end: usize,
@@ -164,7 +164,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
                 if err.is_some() {
                     return err;
                 }
-            } else if let Some(token) = self.lex_numeric() {
+            } else if let Some(token) = self.lex_int_or_float_value() {
                 let err = cb(Ok(token));
                 if err.is_some() {
                     return err;
@@ -179,10 +179,14 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
                 if err.is_some() {
                     return err;
                 }
-            } else if let Some(c) = self.peek() {
-                let err = cb(Err(LexError::new(
-                    LexErrorKind::InvalidChar(c),
-                    self.loc(self.pos, self.pos),
+            } else if self.peek().is_some() {
+                let start = self.pos;
+                self.next();
+
+                // TODO: to consume a unicode code-point in UTF-8 bytes
+                let err = cb(Ok(Token::new(
+                    TokenKind::Invalid,
+                    self.loc(start, self.pos),
                 )));
                 if err.is_some() {
                     return err;
@@ -218,6 +222,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         return false;
     }
 
+    #[must_use]
     fn expect(&mut self, expected: u8) -> Option<LexError> {
         if self.expect_opt(expected) {
             return None;
@@ -291,32 +296,30 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
     }
 
     // IntValue or FloatValue
-    fn lex_numeric(&mut self) -> Option<Token> {
+    fn lex_int_or_float_value(&mut self) -> Option<Token> {
         let start = self.pos;
 
         // NegativeSign
         self.expect_opt(b'-');
 
         // IntegerPart
-        let mut has_int_part = false;
         while let Some(c) = self.peek() {
             if is_digit(c) {
                 self.next();
-                has_int_part = true;
 
-                if c == b'0' && !has_int_part {
-                    let invalid_start = self.pos;
-                    // ok, and make sure the next u8 is not digit nor NameStart
+                if c == b'0' && self.pos == (start+1) {
+                    let start_invalid = self.pos;
+                    // "0" is ok, and make sure the next u8 is not digit.
+                    // for example "0123" is an invalid token.
                     while let Some(ahead) = self.peek() {
                         if is_digit(ahead) {
-                            // "0123" is invalid
                             self.next();
                         } else {
                             break;
                         }
                     }
 
-                    if invalid_start != self.pos {
+                    if self.pos != start_invalid {
                         return Some(Token::new(TokenKind::Invalid, self.loc(start, self.pos)));
                     }
                 }
@@ -325,7 +328,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
             }
         }
 
-        if !has_int_part {
+        if self.pos == start {
             return None;
         }
 
@@ -333,9 +336,8 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         let mut has_fractional_part = false;
         if self.expect_opt(b'.') {
             // fractional part
-            has_fractional_part = true;
 
-            // digits
+            // digit+
             while let Some(c) = self.peek() {
                 if is_digit(c) {
                     self.next();
@@ -344,28 +346,32 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
                     break;
                 }
             }
+
+            if !has_fractional_part {
+                return Some(Token::new(TokenKind::Invalid, self.loc(start, self.pos)));
+            }
         }
 
         let mut has_exponent_part = false;
         if self.expect_opt(b'e') || self.expect_opt(b'E') {
             // exponent part
-            has_exponent_part = true;
 
             // sign
             let _ = self.expect_opt(b'-') || self.expect_opt(b'+');
 
-            // digits
+            // digit+
             while let Some(c) = self.peek() {
                 if is_digit(c) {
                     self.next();
+                    has_exponent_part = true;
                 } else {
                     break;
                 }
             }
-        }
 
-        if self.lex_name().is_some() {
-            return Some(Token::new(TokenKind::Invalid, self.loc(start, self.pos)));
+            if !has_exponent_part {
+                return Some(Token::new(TokenKind::Invalid, self.loc(start, self.pos)));
+            }
         }
 
         if has_fractional_part || has_exponent_part {
@@ -415,8 +421,12 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
                 b'.' => {
                     // ...
                     self.next();
-                    self.expect(b'.');
-                    self.expect(b'.');
+                    if self.expect(b'.').is_some() {
+                        return Some(Token::new(TokenKind::Invalid, self.loc(start, self.pos)));
+                    }
+                    if self.expect(b'.').is_some() {
+                        return Some(Token::new(TokenKind::Invalid, self.loc(start, self.pos)));
+                    }
                     return Some(Token::new(TokenKind::Punctuator, self.loc(start, self.pos)));
                 }
                 _ => return None,
@@ -440,6 +450,22 @@ mod tests {
     }
 
     #[test]
+    fn lex_invalid() {
+        let invalid_values = ["01", "..", "/"];
+        for s in invalid_values.iter() {
+            let mut lexer = Lexer::from_iter(s.bytes());
+            let tokens = lexer.lex_to_tokens().unwrap();
+
+            assert_eq!(
+                tokens,
+                vec![Token::new(TokenKind::Invalid, Loc::new(0, s.len())),],
+                "src={:?}",
+                s
+            );
+        }
+    }
+
+    #[test]
     fn lex_int_value() {
         let int_values = ["0", "42", "-1234567890"];
         for s in int_values.iter() {
@@ -452,13 +478,10 @@ mod tests {
             let tokens = r.unwrap();
 
             assert_eq!(tokens.len(), 1);
-
             let token = tokens.get(0).unwrap();
-            assert_eq!(token.loc.start, 0);
-            assert_eq!(token.loc.end, s.len());
-            assert_eq!(token.value, TokenKind::IntValue);
-
             assert_eq!(token.get_str(&src), *s);
+            assert_eq!(token.loc, Loc::new(0, s.len()));
+            assert_eq!(token.value, TokenKind::IntValue);
         }
     }
 
@@ -479,7 +502,7 @@ mod tests {
             let token = tokens.get(0).unwrap();
             assert_eq!(token.loc.start, 0);
             assert_eq!(token.loc.end, s.len());
-            assert_eq!(token.value, TokenKind::FloatValue);
+            assert_eq!(token.value, TokenKind::FloatValue, "src={:?}", src);
 
             assert_eq!(token.get_str(&src), *s);
         }
