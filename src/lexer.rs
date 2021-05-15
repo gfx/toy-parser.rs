@@ -44,15 +44,28 @@ pub enum TokenKind {
     StringValue,
 
     // Ignored Tokens
-    // TODO: recognize them in lex()
-    UnicodeBOM,
+    UnicodeBOM, // TODO
     WhiteSpace,
     LineTerminator,
     Comment,
     Comma,
 
-    // abstract token used in errors
-    NumericValue, // either IntValue or FloatValue
+    // tokens not defined in the spec
+    NumericValue, // to indicate either IntValue or FloatValue
+    Invalid,
+}
+
+impl TokenKind {
+    pub fn is_ignored(&self) -> bool {
+        return match self {
+            TokenKind::UnicodeBOM
+            | TokenKind::WhiteSpace
+            | TokenKind::LineTerminator
+            | TokenKind::Comment
+            | TokenKind::Comma => true,
+            _ => false,
+        };
+    }
 }
 
 pub type Token = Annotated<TokenKind>;
@@ -65,10 +78,10 @@ impl Token {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LexErrorKind {
-    Unexpectedu8 { expected: u8, got: u8 },
+    UnexpectedChar { expected: u8, got: u8 },
     UnexpectedEof,
     UnexpectedToken { expected: TokenKind, got: u8 },
-    Invalidu8(u8),
+    InvalidChar(u8),
 }
 
 pub type LexError = Annotated<LexErrorKind>;
@@ -141,26 +154,34 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         cb: &mut F,
     ) -> Option<LexError> {
         loop {
-            self.skip_whitespaces();
-
-            if let Ok(token) = self.lex_numeric() {
+            if let Some(token) = self.lex_whitespaces() {
                 let err = cb(Ok(token));
                 if err.is_some() {
                     return err;
                 }
-            } else if let Ok(token) = self.lex_name() {
+            } else if let Some(token) = self.lex_line_terminators() {
                 let err = cb(Ok(token));
                 if err.is_some() {
                     return err;
                 }
-            } else if let Ok(token) = self.lex_punctuator() {
+            } else if let Some(token) = self.lex_numeric() {
+                let err = cb(Ok(token));
+                if err.is_some() {
+                    return err;
+                }
+            } else if let Some(token) = self.lex_name() {
+                let err = cb(Ok(token));
+                if err.is_some() {
+                    return err;
+                }
+            } else if let Some(token) = self.lex_punctuator() {
                 let err = cb(Ok(token));
                 if err.is_some() {
                     return err;
                 }
             } else if let Some(c) = self.peek() {
                 let err = cb(Err(LexError::new(
-                    LexErrorKind::Invalidu8(c),
+                    LexErrorKind::InvalidChar(c),
                     self.loc(self.pos, self.pos),
                 )));
                 if err.is_some() {
@@ -181,31 +202,6 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
 
     fn loc(&self, start: usize, end: usize) -> Loc {
         return Loc::new(start, end);
-    }
-
-    fn skip_whitespaces(&mut self) {
-        while let Some(c) = self.peek() {
-            match c {
-                SP | HT => {
-                    self.next();
-                }
-                NR => {
-                    self.next();
-                    self.line += 1;
-                }
-                CR => {
-                    self.next();
-                    self.line += 1;
-
-                    if self.expect_opt(CR) {
-                        self.next();
-                    }
-                }
-                _ => {
-                    return;
-                }
-            }
-        }
     }
 
     fn peek(&mut self) -> Option<u8> {
@@ -229,7 +225,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
 
         if let Some(got) = self.peek() {
             return Some(LexError::new(
-                LexErrorKind::Unexpectedu8 { expected, got },
+                LexErrorKind::UnexpectedChar { expected, got },
                 self.loc(self.pos, self.pos + 1),
             ));
         } else {
@@ -240,19 +236,62 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         }
     }
 
-    fn unexpected_token_error(&mut self, expected: TokenKind) -> LexError {
-        if let Some(got) = self.peek() {
-            return LexError::new(
-                LexErrorKind::UnexpectedToken { expected, got },
-                self.loc(self.pos, self.pos + 1),
-            );
+    fn lex_whitespaces(&mut self) -> Option<Token> {
+        let start = self.pos;
+
+        while let Some(c) = self.peek() {
+            match c {
+                SP | HT => {
+                    self.next();
+                }
+                _ => {
+                    break;
+                }
+            };
+        }
+
+        if start != self.pos {
+            return Some(Token::new(TokenKind::WhiteSpace, self.loc(start, self.pos)));
         } else {
-            return LexError::new(LexErrorKind::UnexpectedEof, self.loc(self.pos, self.pos));
+            return None;
+        }
+    }
+
+    fn lex_line_terminators(&mut self) -> Option<Token> {
+        let start = self.pos;
+
+        while let Some(c) = self.peek() {
+            match c {
+                NR => {
+                    self.next();
+                    self.line += 1;
+                }
+                CR => {
+                    self.next();
+                    self.line += 1;
+
+                    if self.expect_opt(CR) {
+                        self.next();
+                    }
+                }
+                _ => {
+                    break;
+                }
+            };
+        }
+
+        if start != self.pos {
+            return Some(Token::new(
+                TokenKind::LineTerminator,
+                self.loc(start, self.pos),
+            ));
+        } else {
+            return None;
         }
     }
 
     // IntValue or FloatValue
-    fn lex_numeric(&mut self) -> Result<Token, LexError> {
+    fn lex_numeric(&mut self) -> Option<Token> {
         let start = self.pos;
 
         // NegativeSign
@@ -266,21 +305,28 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
                 has_int_part = true;
 
                 if c == b'0' && !has_int_part {
+                    let invalid_start = self.pos;
                     // ok, and make sure the next u8 is not digit nor NameStart
-                    if let Some(ahead) = self.peek() {
-                        if is_name_start(ahead) {
-                            return Err(self.unexpected_token_error(TokenKind::NumericValue));
+                    while let Some(ahead) = self.peek() {
+                        if is_digit(ahead) {
+                            // "0123" is invalid
+                            self.next();
+                        } else {
+                            break;
                         }
+                    }
+
+                    if invalid_start != self.pos {
+                        return Some(Token::new(TokenKind::Invalid, self.loc(start, self.pos)));
                     }
                 }
             } else {
-                // TODO: make sure the next u8 is not NameStart
                 break;
             }
         }
 
         if !has_int_part {
-            return Err(self.unexpected_token_error(TokenKind::NumericValue));
+            return None;
         }
 
         // fractional part or exponent part
@@ -318,28 +364,29 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
             }
         }
 
+        if self.lex_name().is_some() {
+            return Some(Token::new(TokenKind::Invalid, self.loc(start, self.pos)));
+        }
+
         if has_fractional_part || has_exponent_part {
-            return Ok(Token::new(TokenKind::FloatValue, self.loc(start, self.pos)));
+            return Some(Token::new(TokenKind::FloatValue, self.loc(start, self.pos)));
         } else {
-            return Ok(Token::new(TokenKind::IntValue, self.loc(start, self.pos)));
+            return Some(Token::new(TokenKind::IntValue, self.loc(start, self.pos)));
         }
     }
 
     // Name
-    fn lex_name(&mut self) -> Result<Token, LexError> {
+    fn lex_name(&mut self) -> Option<Token> {
         let start = self.pos;
         // NameStart
         if let Some(c) = self.peek() {
             if is_name_start(c) {
                 self.next();
             } else {
-                return Err(self.unexpected_token_error(TokenKind::Name));
+                return None;
             }
         } else {
-            return Err(LexError::new(
-                LexErrorKind::UnexpectedEof,
-                self.loc(self.pos, self.pos),
-            ));
+            return None;
         }
 
         // NameContinue
@@ -351,11 +398,11 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
             }
         }
 
-        return Ok(Token::new(TokenKind::Name, self.loc(start, self.pos)));
+        return Some(Token::new(TokenKind::Name, self.loc(start, self.pos)));
     }
 
     // Punctuator
-    fn lex_punctuator(&mut self) -> Result<Token, LexError> {
+    fn lex_punctuator(&mut self) -> Option<Token> {
         let start = self.pos;
 
         if let Some(c) = self.peek() {
@@ -363,23 +410,20 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
                 b'!' | b'$' | b'&' | b'(' | b')' | b':' | b'=' | b'@' | b'[' | b']' | b'{'
                 | b'|' | b'}' => {
                     self.next();
-                    return Ok(Token::new(TokenKind::Punctuator, self.loc(start, self.pos)));
+                    return Some(Token::new(TokenKind::Punctuator, self.loc(start, self.pos)));
                 }
                 b'.' => {
                     // ...
                     self.next();
                     self.expect(b'.');
                     self.expect(b'.');
-                    return Ok(Token::new(TokenKind::Punctuator, self.loc(start, self.pos)));
+                    return Some(Token::new(TokenKind::Punctuator, self.loc(start, self.pos)));
                 }
-                _ => return Err(self.unexpected_token_error(TokenKind::Punctuator)),
+                _ => return None,
             }
         }
 
-        return Err(LexError::new(
-            LexErrorKind::UnexpectedEof,
-            self.loc(start, self.pos),
-        ));
+        return None;
     }
 }
 
@@ -462,6 +506,9 @@ mod tests {
             .iter()
             .map(|token| {
                 return token.value;
+            })
+            .filter(|token| {
+                return !token.is_ignored();
             })
             .collect();
 
