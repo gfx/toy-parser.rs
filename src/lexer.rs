@@ -71,7 +71,7 @@ impl TokenKind {
 pub type Token = Annotated<TokenKind>;
 
 impl Token {
-    pub fn get_str<'a>(&self, source: &'a String) -> &'a str {
+    pub fn get_str<'a>(&self, source: &'a str) -> &'a str {
         return &source[self.loc.start..self.loc.end];
     }
 }
@@ -86,9 +86,7 @@ pub enum LexErrorKind {
 
 pub type LexError = Annotated<LexErrorKind>;
 
-pub struct Lexer<Iter>
-where
-    Iter: iter::Iterator<Item = u8>,
+pub struct Lexer<Iter: iter::Iterator<Item = u8>>
 {
     src: iter::Peekable<Iter>,
 
@@ -123,6 +121,12 @@ fn is_name_continue(c: u8) -> bool {
     return is_letter(c) || is_digit(c) || c == b'_';
 }
 
+impl<'a> Lexer<std::str::Bytes<'a>> {
+    pub fn from_str(str: &'a str) -> Self {
+        return Lexer::from_iter(str.bytes());
+    }
+}
+
 impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
     pub fn from_iter(iter: Iter) -> Self {
         return Self {
@@ -132,62 +136,54 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         };
     }
 
-    pub fn lex_to_tokens(&mut self) -> Result<Vec<Token>, LexError> {
-        let mut tokens: Vec<Token> = Vec::new();
-        if let Some(err) = self.lex(&mut |result| {
-            return match result {
-                Ok(token) => {
-                    tokens.push(token);
-                    None
-                }
-                Err(err) => Some(err),
-            };
-        }) {
-            return Err(err);
-        } else {
-            return Ok(tokens);
-        }
+    pub fn lex_to_tokens(&mut self) -> Vec<Token> {
+        let mut tokens = Vec::<Token>::new();
+        self.lex(&mut |token| {
+            tokens.push(token);
+            return None;
+        });
+        return tokens;
     }
 
-    pub fn lex<F: FnMut(Result<Token, LexError>) -> Option<LexError>>(
+    pub fn lex<F: FnMut(Token) -> Option<LexError>>(
         &mut self,
         cb: &mut F,
     ) -> Option<LexError> {
         loop {
             if let Some(token) = self.lex_whitespaces() {
-                let err = cb(Ok(token));
+                let err = cb(token);
                 if err.is_some() {
                     return err;
                 }
             } else if let Some(token) = self.lex_line_terminators() {
-                let err = cb(Ok(token));
+                let err = cb(token);
                 if err.is_some() {
                     return err;
                 }
             } else if let Some(token) = self.lex_int_or_float_value() {
-                let err = cb(Ok(token));
+                let err = cb(token);
                 if err.is_some() {
                     return err;
                 }
             } else if let Some(token) = self.lex_name() {
-                let err = cb(Ok(token));
+                let err = cb(token);
                 if err.is_some() {
                     return err;
                 }
             } else if let Some(token) = self.lex_punctuator() {
-                let err = cb(Ok(token));
+                let err = cb(token);
                 if err.is_some() {
                     return err;
                 }
             } else if self.peek().is_some() {
                 let start = self.pos;
-                self.next();
+                self.consume();
 
                 // TODO: to consume a unicode code-point in UTF-8 bytes
-                let err = cb(Ok(Token::new(
+                let err = cb(Token::new(
                     TokenKind::Invalid,
                     self.loc(start, self.pos),
-                )));
+                ));
                 if err.is_some() {
                     return err;
                 }
@@ -199,7 +195,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         return None;
     }
 
-    fn next(&mut self) {
+    fn consume(&mut self) {
         self.src.next().unwrap();
         self.pos += 1;
     }
@@ -215,7 +211,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
     fn expect_opt(&mut self, expected: u8) -> bool {
         if let Some(got) = self.peek() {
             if got == expected {
-                self.next();
+                self.consume();
                 return true;
             }
         }
@@ -247,7 +243,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         while let Some(c) = self.peek() {
             match c {
                 SP | HT => {
-                    self.next();
+                    self.consume();
                 }
                 _ => {
                     break;
@@ -268,15 +264,15 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         while let Some(c) = self.peek() {
             match c {
                 NR => {
-                    self.next();
+                    self.consume();
                     self.line += 1;
                 }
                 CR => {
-                    self.next();
+                    self.consume();
                     self.line += 1;
 
                     if self.expect_opt(CR) {
-                        self.next();
+                        self.consume();
                     }
                 }
                 _ => {
@@ -305,7 +301,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         // IntegerPart
         while let Some(c) = self.peek() {
             if is_digit(c) {
-                self.next();
+                self.consume();
 
                 if c == b'0' && self.pos == (start+1) {
                     let start_invalid = self.pos;
@@ -313,7 +309,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
                     // for example "0123" is an invalid token.
                     while let Some(ahead) = self.peek() {
                         if is_digit(ahead) {
-                            self.next();
+                            self.consume();
                         } else {
                             break;
                         }
@@ -340,7 +336,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
             // digit+
             while let Some(c) = self.peek() {
                 if is_digit(c) {
-                    self.next();
+                    self.consume();
                     has_fractional_part = true;
                 } else {
                     break;
@@ -362,7 +358,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
             // digit+
             while let Some(c) = self.peek() {
                 if is_digit(c) {
-                    self.next();
+                    self.consume();
                     has_exponent_part = true;
                 } else {
                     break;
@@ -387,7 +383,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         // NameStart
         if let Some(c) = self.peek() {
             if is_name_start(c) {
-                self.next();
+                self.consume();
             } else {
                 return None;
             }
@@ -398,7 +394,7 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
         // NameContinue
         while let Some(c) = self.peek() {
             if is_name_continue(c) {
-                self.next();
+                self.consume();
             } else {
                 break;
             }
@@ -415,12 +411,12 @@ impl<Iter: iter::Iterator<Item = u8>> Lexer<Iter> {
             match c {
                 b'!' | b'$' | b'&' | b'(' | b')' | b':' | b'=' | b'@' | b'[' | b']' | b'{'
                 | b'|' | b'}' => {
-                    self.next();
+                    self.consume();
                     return Some(Token::new(TokenKind::Punctuator, self.loc(start, self.pos)));
                 }
                 b'.' => {
                     // ...
-                    self.next();
+                    self.consume();
                     if self.expect(b'.').is_some() {
                         return Some(Token::new(TokenKind::Invalid, self.loc(start, self.pos)));
                     }
@@ -444,8 +440,8 @@ mod tests {
     #[test]
     fn lex_line_count() {
         let s = "foo\nbar\rbaz\r\nbax";
-        let mut lexer = Lexer::from_iter(s.bytes());
-        let _ = lexer.lex_to_tokens().unwrap();
+        let mut lexer = Lexer::from_str(s);
+        let tokens = lexer.lex_to_tokens();
         assert_eq!(lexer.line, 4);
     }
 
@@ -453,8 +449,8 @@ mod tests {
     fn lex_invalid() {
         let invalid_values = ["01", "..", "/"];
         for s in invalid_values.iter() {
-            let mut lexer = Lexer::from_iter(s.bytes());
-            let tokens = lexer.lex_to_tokens().unwrap();
+            let mut lexer = Lexer::from_str(s);
+            let tokens = lexer.lex_to_tokens();
 
             assert_eq!(
                 tokens,
@@ -469,17 +465,12 @@ mod tests {
     fn lex_int_value() {
         let int_values = ["0", "42", "-1234567890"];
         for s in int_values.iter() {
-            let src = String::from(*s);
-            let mut lexer = Lexer::from_iter(src.bytes());
-            let r = lexer.lex_to_tokens();
-            if r.is_err() {
-                panic!("{:?} -> {:?}", src, r.unwrap_err());
-            }
-            let tokens = r.unwrap();
+            let mut lexer = Lexer::from_str(s);
+            let tokens = lexer.lex_to_tokens();
 
             assert_eq!(tokens.len(), 1);
             let token = tokens.get(0).unwrap();
-            assert_eq!(token.get_str(&src), *s);
+            assert_eq!(token.get_str(s), *s);
             assert_eq!(token.loc, Loc::new(0, s.len()));
             assert_eq!(token.value, TokenKind::IntValue);
         }
@@ -489,22 +480,17 @@ mod tests {
     fn lex_float_value() {
         let float_values = ["0.0", "42.195", "0.1e1", "0e0", "0E0", "0e+0", "0e-0"];
         for s in float_values.iter() {
-            let src = String::from(*s);
-            let mut lexer = Lexer::from_iter(src.bytes());
-            let r = lexer.lex_to_tokens();
-            if r.is_err() {
-                panic!("{:?} -> {:?}", src, r.unwrap_err());
-            }
-            let tokens = r.unwrap();
+            let mut lexer = Lexer::from_str(s);
+            let tokens = lexer.lex_to_tokens();
 
             assert_eq!(tokens.len(), 1);
 
             let token = tokens.get(0).unwrap();
             assert_eq!(token.loc.start, 0);
             assert_eq!(token.loc.end, s.len());
-            assert_eq!(token.value, TokenKind::FloatValue, "src={:?}", src);
+            assert_eq!(token.value, TokenKind::FloatValue, "src={:?}", s);
 
-            assert_eq!(token.get_str(&src), *s);
+            assert_eq!(token.get_str(s), *s);
         }
     }
 
@@ -519,11 +505,7 @@ mod tests {
         "#;
         let src = String::from(s);
         let mut lexer = Lexer::from_iter(src.bytes());
-        let r = lexer.lex_to_tokens();
-        if r.is_err() {
-            panic!("{:?} -> {:?}", src, r.unwrap_err());
-        }
-        let tokens = r.unwrap();
+        let tokens = lexer.lex_to_tokens();
 
         let token_kinds: Vec<TokenKind> = tokens
             .iter()
